@@ -113,3 +113,120 @@ size_t base64_decode(const char *in, size_t n, uint8_t *out) {
     }
     return o;
 }
+
+// Bounded JSON walk: a nested "error" or that word in a UI label is not an
+// RPC failure. The decrypted payload is length-delimited, not NUL-terminated.
+typedef struct { const uint8_t *p, *end; } json_cursor;
+
+static void json_space(json_cursor *c) {
+    while (c->p < c->end && strchr(" \t\r\n", *c->p) && *c->p) c->p++;
+}
+
+static int json_string(json_cursor *c, char *key, size_t cap) {
+    if (c->p == c->end || *c->p++ != '"') return 0;
+    size_t n = 0;
+    while (c->p < c->end) {
+        unsigned ch = *c->p++;
+        if (ch == '"') { if (cap) key[n < cap ? n : cap - 1] = 0; return 1; }
+        if (ch < 0x20) return 0;
+        if (ch == '\\') {
+            if (c->p == c->end) return 0;
+            ch = *c->p++;
+            if (ch == 'u') {
+                ch = 0;
+                for (int i = 0; i < 4; i++) {
+                    if (c->p == c->end) return 0;
+                    int hex = hexval((char)*c->p++);
+                    if (hex < 0) return 0;
+                    ch = (ch << 4) | (unsigned)hex;
+                }
+                // Non-ASCII keys cannot match the protocol's ASCII names.
+                if (!ch || ch > 127) ch = '?';
+            } else {
+                if (!strchr("\"\\/bfnrt", ch) || !ch) return 0;
+                switch (ch) {
+                    case 'b': ch = '\b'; break; case 'f': ch = '\f'; break;
+                    case 'n': ch = '\n'; break; case 'r': ch = '\r'; break;
+                    case 't': ch = '\t'; break;
+                }
+            }
+        }
+        if (cap && n < cap - 1) key[n] = (char)ch;
+        n++;
+    }
+    return 0;
+}
+
+static int json_value(json_cursor *c, int depth) {
+    json_space(c);
+    if (c->p == c->end || depth > 128) return 0;
+    uint8_t ch = *c->p;
+    if (ch == '"') return json_string(c, NULL, 0);
+    if (ch == '{' || ch == '[') {
+        uint8_t close = ch == '{' ? '}' : ']';
+        c->p++; json_space(c);
+        if (c->p < c->end && *c->p == close) { c->p++; return 1; }
+        for (;;) {
+            if (ch == '{') {
+                if (!json_string(c, NULL, 0)) return 0;
+                json_space(c);
+                if (c->p == c->end || *c->p++ != ':') return 0;
+            }
+            if (!json_value(c, depth + 1)) return 0;
+            json_space(c);
+            if (c->p == c->end) return 0;
+            if (*c->p == close) { c->p++; return 1; }
+            if (*c->p++ != ',') return 0;
+            json_space(c);
+        }
+    }
+    const char *literal = ch == 't' ? "true" : ch == 'f' ? "false" : ch == 'n' ? "null" : NULL;
+    if (literal) {
+        size_t n = strlen(literal);
+        if ((size_t)(c->end - c->p) < n || memcmp(c->p, literal, n)) return 0;
+        c->p += n; return 1;
+    }
+    if (ch == '-') c->p++;
+    if (c->p == c->end) return 0;
+    if (*c->p == '0') c->p++;
+    else {
+        if (*c->p < '1' || *c->p > '9') return 0;
+        do { c->p++; } while (c->p < c->end && *c->p >= '0' && *c->p <= '9');
+    }
+    if (c->p < c->end && *c->p == '.') {
+        c->p++;
+        if (c->p == c->end || *c->p < '0' || *c->p > '9') return 0;
+        do { c->p++; } while (c->p < c->end && *c->p >= '0' && *c->p <= '9');
+    }
+    if (c->p < c->end && (*c->p == 'e' || *c->p == 'E')) {
+        c->p++;
+        if (c->p < c->end && (*c->p == '+' || *c->p == '-')) c->p++;
+        if (c->p == c->end || *c->p < '0' || *c->p > '9') return 0;
+        do { c->p++; } while (c->p < c->end && *c->p >= '0' && *c->p <= '9');
+    }
+    return 1;
+}
+
+int json_rpc_exit_status(const uint8_t *data, size_t len) {
+    if (!data || !len) return 1;
+    json_cursor c = {data, data + len};
+    json_space(&c);
+    if (c.p == c.end || *c.p++ != '{') return 1;
+    unsigned results = 0, errors = 0;
+    for (;;) {
+        json_space(&c);
+        char key[16];
+        if (!json_string(&c, key, sizeof key)) return 1;
+        json_space(&c);
+        if (c.p == c.end || *c.p++ != ':') return 1;
+        if (!strcmp(key, "result")) results++;
+        if (!strcmp(key, "error")) errors++;
+        if (!json_value(&c, 0)) return 1;
+        json_space(&c);
+        if (c.p == c.end) return 1;
+        if (*c.p == '}') { c.p++; break; }
+        if (*c.p++ != ',') return 1;
+    }
+    json_space(&c);
+    return c.p == c.end && results == 1 && errors == 0 ? 0 : 1;
+}

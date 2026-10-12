@@ -38,6 +38,11 @@ sh ictrl.sh call tap '{"x":100,"y":200}'
 sh ictrl.sh shot screen.jpg
 ```
 
+`call` preserves the full JSON reply on stdout and exits nonzero for a top-level
+JSON-RPC error, even when HTTP returned 200. Use `set -e` or check each exit status
+in multi-command scripts; a trailing `date`/`echo` otherwise hides earlier failures.
+The client never automatically retries an action or restarts the Runner.
+
 Invoke via `sh ictrl.sh`, not `./ictrl`: skill installers write files 0644, so
 the binary arrives without an exec bit. The wrapper runs under `sh` (which needs
 none) and fixes the mode on first use.

@@ -25,6 +25,30 @@ static int hexeq(const uint8_t *got, size_t n, const char *want) {
 int main(void) {
     printf("ictrl selftest\n");
 
+    // RPC failures must survive HTTP 200 and shell command chaining.
+    {
+        const char *success[] = {
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"error\":\"UI label\"}}",
+            "{\"result\":[null,true,false,-1.2e+3,\"escaped \\\"error\\\": {}\"],\"id\":1}",
+            " {\"r\\u0065sult\":null} \n"
+        };
+        const char *failure[] = {
+            "{\"error\":{\"code\":-32602,\"message\":\"empty ref\"},\"id\":1}",
+            "{\"result\":{},\"error\":{}}", "{\"result\":{},\"error\":null}",
+            "{\"result\":0,\"result\":1}", "{}", "[]", "{\"result\":",
+            "{\"result\":{\"broken\":true,}}", "{\"result\":01}",
+            "{\"result\":\"unterminated}", "{\"result\":true} trailing",
+            "{\"result\":{},\"\\u0065rror\":{}}",
+            "{\"\\result\":true}"
+        };
+        for (size_t i = 0; i < sizeof success / sizeof *success; i++)
+            check("RPC success keeps nested/text error fields", json_rpc_exit_status((const uint8_t *)success[i], strlen(success[i])) == 0);
+        for (size_t i = 0; i < sizeof failure / sizeof *failure; i++)
+            check("RPC error or malformed reply exits nonzero", json_rpc_exit_status((const uint8_t *)failure[i], strlen(failure[i])) == 1);
+        const uint8_t bounded[] = {'{','"','r','e','s','u','l','t','"',':','0','}'};
+        check("RPC input need not be NUL terminated", json_rpc_exit_status(bounded, sizeof bounded) == 0);
+    }
+
     // ── SHA-256, FIPS 180-2 ──
     {
         uint8_t d[32];

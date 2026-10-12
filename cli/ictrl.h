@@ -56,4 +56,8 @@ int hex_decode(const char *in, uint8_t *out, size_t outlen);
 size_t base64_encode(const uint8_t *in, size_t n, char *out);
 size_t base64_decode(const char *in, size_t n, uint8_t *out);
 
+// Classify the decrypted JSON-RPC envelope without changing its stdout bytes.
+// Returns 0 only for a well-formed object with result and no error member.
+int json_rpc_exit_status(const uint8_t *data, size_t len);
+
 #endif

@@ -2,11 +2,18 @@
 name: ictrl-phone-control
 description: Control an iPhone over HTTP to automate real apps — tap, type, swipe, read the screen's view tree, launch apps, take screenshots. Use when the user asks to operate a phone, drive an iOS app, automate a mobile task (search a product, check an order, fill a form), or inspect what's on a device's screen. The service is iCTRL, JSON-RPC 2.0 on port 8200; requests are encrypted, so drive it with a client downloaded from the device (a static CLI needing no interpreter, or a Python one) rather than hand-written HTTP.
 skill_version: "1.96.1"
+version: "1.96.1-minis.1"
 ---
 
 # iCTRL — control an iPhone over HTTP
 
-iCTRL runs on the iPhone and serves UI automation as **JSON-RPC 2.0 over HTTP, port 8200**, encrypted. This file is under 15K characters — **read it whole, once**; don't `head`/`grep` it in pieces.
+iCTRL runs on the iPhone and serves UI automation as **JSON-RPC 2.0 over HTTP, port 8200**, encrypted. **Read this manual whole once per conversation**, then reuse it while its version is unchanged; do not reread it for each phone task. If a tool explicitly truncates it, read only the missing tail.
+
+### Service readiness and automatic wake in Minis
+
+Before the first RPC, probe `http://127.0.0.1:8200/schema` with a short timeout. If it answers, reuse the running service and cached pairing. If unreachable and the user has requested phone operation, Minis can run `apple-open 'ictrl://start?callback=minis%3A%2F%2F'` **once** to wake the installed Runner. The opener's `opened` flag is not proof of readiness: poll `/schema` at one-second intervals, bounded to about 15 seconds, and proceed only on HTTP 200. This cold-start readiness polling is the only fixed-wait exception below. Do not loop URL opens or re-pair on connection refusal. If still unavailable, report that the user must start the Runner/check the runtime requirements. A device passcode, UI automation consent, expired signing or a missing developer disk image after reboot cannot be solved by the skill. Respect an explicit request to keep automation stopped.
+
+When bundled, `sh /var/minis/skills/ictrl-phone-control/Scripts/minis-ensure-ictrl.sh` performs this bounded local readiness check and wake. Do not call the Runner's own `open_url` RPC to start a stopped Runner.
 
 ## Quick start
 
@@ -25,14 +32,16 @@ $I call tap '{"ref":"<ref>"}'
 - Keep the client in `~/.ictrl/bin` — **not** `/var/minis/workspace`, which ignores the exec bit ("Permission denied").
 - Elsewhere: `curl -o ictrl_rpc.py http://<host>:8200/skill/clients/python`, then `python3 ictrl_rpc.py --host <host>:8200 call …` (LAN pairing: `pip install cryptography`). The CLI takes `--host`/`ICTRL_HOST`.
 - Keys: `~/.ictrl/token.json`, one per `host:port`; reuse them (expire after 30 days unused). Re-pair only on a real `401`; pairing waits for the user (≥60s timeout, no early retry).
-- `/schema` unreachable → the runner isn't running; ask the user to start it.
+- `/schema` unreachable → follow the one-shot wake procedure above; ask the user to start it only if that fails or the host lacks a native URL opener.
 
 ## Rules — read these first
 
 **IMPORTANT — the rules agents break most, each costing minutes per task:**
-- **IMPORTANT: no `sleep` in your commands.** Actions already wait for the screen to settle (`settle.stable`) — read right away (see Waiting).
+- **IMPORTANT: no `sleep` or nonzero `shell_execute.delay` during UI actions.** Actions already wait for the screen to settle (`settle.stable`) — read right away. Only cold-start readiness polling has a bounded wait.
 - **IMPORTANT: never discard or cut a reply.** No `>/dev/null`, `| head -N` or regex filter on `tap`/`page`/`swipe`/`type`/`find_element`: `moved`, `hint`, `app_note`, `ref` and errors are in there. Check a `ref` is non-empty before tapping it.
 - **IMPORTANT: read a screen once.** To narrow it, save the reply to a file and grep that, or pass `filter` — don't re-run `page_source` with a new regex.
+- **Check both process status and JSON `error`.** Old clients may exit 0 on RPC errors. Never mask failure with `; date`, `; echo`, or a pipeline ending in `head`. Use `set -e` for sequential scripts, preserve the full reply, and stop on an error envelope before dependent actions. An empty `ref` or `element_id` is invalid: do not send a speculative call.
+- **Batch only known steps.** Once a target is verified, do the action and next page read in one shell call. Stop and inspect unexpected results; do not pre-plan blind taps across unseen screens. Reuse previously verified bundle IDs. Ordinary tasks need no separate `date` or `device_info` call for narration.
 
 1. **Open apps by bundle id, never by tapping home-screen icons.** `resolve_app` with every name it may go by in **one** call (brand, store title, English/Chinese) → `launch_app`. `country` picks the store (default `us`; `cn` for China-only apps).
 2. **Read before you act.** On any screen you haven't read, call `page_source{visible_only:true, max_children:50}` (~0.4s) to learn which view/tab/date you're really on.
@@ -44,7 +53,7 @@ $I call tap '{"ref":"<ref>"}'
 8. **Know where data came from.** Act only on the target app's content. Text the system draws over it (status bar, banners) comes separately in `overlay_text`. Screenshots help only if you can view images.
 9. **Stop before paying.** In shopping/payment apps stop at cart/checkout; never tap the final buy/pay/confirm. Never delete the user's own items (cart, notes, messages) without asking.
 
-## Waiting: actions settle for you — never sleep
+## Waiting: actions settle for you
 
 `tap`, `double_tap`, `long_press`, `swipe`, `drag`, `page`, `scroll`, `type`, `clear_text` **wait until the screen stops changing** (low-res frame compare, up to 2s) and report it:
 `settle:{stable, screen_changed, waited_ms}`, plus a `hint` saying so.
@@ -119,6 +128,8 @@ Most responses carry a **`hint`** for that exact result — which limits applied
 ## Scrolling
 
 - **Long lists/feeds: `collect{pages:N}`** (≤8) reads, pages, reads… in ONE call (~1.5s a screen), returning only new text; call again to continue. It switches to OCR by itself when the tree is thin, slow or stops answering. `page` moves ⅔ of a screen, no momentum. Don't read with `swipe`.
+- Choose the requested city/category/date filters first when available. A general overview does not require exhausting unrelated results; return a useful scoped sample with its limits. Continue to the end when exhaustive coverage is requested. **`at_end:true` means stop immediately**, not another confirmation `collect`.
+- Keep each item's title together with its date, venue, price and availability evidence. Extracting only title lines destroys those associations. A keyword count is not a verified category count or proof tickets are on sale; report missing fields as unknown. Save deliverables under `/var/minis/workspace/` before linking `minis://workspace/...`; `/tmp/...` is not that directory. Read back the saved file before linking it.
 - `page`/`scroll` report `moved`. **`moved:false` (`at_end:true`) means stop** — nothing more that way. (A page still loading also looks unmoved; read once more if more is expected.) `keyboard_closed:true`: only the keyboard closed; page again.
 - `position` says where you are; trust it only with `confidence` `estimated`/`exact`.
 
@@ -140,7 +151,7 @@ Most responses carry a **`hint`** for that exact result — which limits applied
 - `device_info.system`: `screen_locked` (black screenshots, taps doing nothing — `unlock` only wakes the screen and never leaves the app: use `home` for that; a passcode needs the user), `foreground_app`, `foreground_is_browser`, thermal/memory/battery.
 - `logs{text?, max_elements?}`: recent log lines over the normal channel. `⏱ ✓ <method>` = completed, `⏱ TIMEOUT`, `⛔️`/`✅` channel state. `GET /logs/history?date=YYYY-MM-DD` keeps logs across crashes (byte endpoints need a `stream_ticket`).
 - `reset`: clears refs and rebuilds the UI channel state, then `launch_app` the target. `config{stop_server:true}` stops the runner (keys persist); it must be relaunched on the device.
-- `/schema` unreachable = the runner isn't running; the user must start it (the Developer Disk Image is lost on every reboot).
+- `/schema` unreachable: try the bounded wake procedure once. If it fails, the user must restore the runtime; the Developer Disk Image is lost on every reboot.
 - On cellular the device isn't reachable from the LAN.
 
 ## Protocol

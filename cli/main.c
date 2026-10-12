@@ -472,9 +472,10 @@ static int rpc_call(const char *hostport, const char *method, const char *params
 
     fwrite(ct, 1, ctlen, stdout);
     fputc('\n', stdout);
+    int rpc_status = json_rpc_exit_status(ct, ctlen);
     free(ct);
     buf_free(&resp);
-    return 0;
+    return rpc_status;
 }
 
 /// LAN pairing (mode A): X25519 to a shared secret, device wraps the key.
