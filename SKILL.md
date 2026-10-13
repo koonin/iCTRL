@@ -2,7 +2,7 @@
 name: ictrl-phone-control
 description: Control an iPhone over HTTP to automate real apps — tap, type, swipe, read the screen's view tree, launch apps, take screenshots. Use when the user asks to operate a phone, drive an iOS app, automate a mobile task (search a product, check an order, fill a form), or inspect what's on a device's screen. The service is iCTRL, JSON-RPC 2.0 on port 8200; requests are encrypted, so drive it with a client downloaded from the device (a static CLI needing no interpreter, or a Python one) rather than hand-written HTTP.
 skill_version: "1.96.1"
-version: "1.96.1-minis.1"
+version: 1.96.1-minis.2
 ---
 
 # iCTRL — control an iPhone over HTTP
@@ -14,6 +14,12 @@ iCTRL runs on the iPhone and serves UI automation as **JSON-RPC 2.0 over HTTP, p
 Before the first RPC, probe `http://127.0.0.1:8200/schema` with a short timeout. If it answers, reuse the running service and cached pairing. If unreachable and the user has requested phone operation, Minis can run `apple-open 'ictrl://start?callback=minis%3A%2F%2F'` **once** to wake the installed Runner. The opener's `opened` flag is not proof of readiness: poll `/schema` at one-second intervals, bounded to about 15 seconds, and proceed only on HTTP 200. This cold-start readiness polling is the only fixed-wait exception below. Do not loop URL opens or re-pair on connection refusal. If still unavailable, report that the user must start the Runner/check the runtime requirements. A device passcode, UI automation consent, expired signing or a missing developer disk image after reboot cannot be solved by the skill. Respect an explicit request to keep automation stopped.
 
 When bundled, `sh /var/minis/skills/ictrl-phone-control/Scripts/minis-ensure-ictrl.sh` performs this bounded local readiness check and wake. Do not call the Runner's own `open_url` RPC to start a stopped Runner.
+
+### Finish in the originating Minis conversation
+
+After completing the requested app work, save needed evidence/results, then return to the originating chat **before your final answer**. Minis supplies the non-secret shell variable `MINIS_RETURN_URL` (`minis://sessions/<id>`). Run `sh /var/minis/skills/ictrl-phone-control/Scripts/minis-return-to-session.sh`; it uses iCTRL `open_url` with that exact link. Without the helper, run `sh "$HOME/.ictrl/bin/ictrl.sh" call open_url "{\"url\":\"$MINIS_RETURN_URL\"}"`. Do not guess a session ID or use the most recent chat. If the variable is missing, use a known originating-session link or report that automatic return is unavailable.
+
+Make this the last phone operation: no extra screenshots/page reads after successful return, and no new chat message via a send API. Write the final result normally in the same conversation. If return fails, preserve the result and report the failure without looping. Leave the target app visible when the user explicitly asks, or when waiting for them to log in, authorize, or review/confirm there. Do not stop the Runner just to return.
 
 ## Quick start
 
